@@ -1,8 +1,10 @@
 #ifndef MESSAGE_HANDLER_H
 #define MESSAGE_HANDLER_H
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 int count_substr(char *msg, const char* substring) {
     if (!substring) return 0;
@@ -143,6 +145,33 @@ char* remove_header(char*msg, size_t head_len) {
     
     free(old_pointer);
     return msg;
+}
+
+int hash(char* msg) {
+    int h = 1;
+    char* v = msg;
+    for (; *v != '\0'; v++) {
+        h = (h + *v * 3813123) % INT_MAX;
+    }
+
+    return h;
+}
+
+void add_hash(char* msg, int h) {
+    char c[4];
+    memcpy(c, (void*)&h, sizeof(int));
+
+    strcat(msg, c);
+}
+
+char* remove_hash(char* msg, int len) {
+    char* h = malloc(4);
+    char *c = msg+len-4;
+    strncpy(h, c, 4);
+//     printf("antes: %s\n", msg);
+    *c = '\0';
+//     printf("depois %s\n", msg);
+    return h;
 }
 
 #endif

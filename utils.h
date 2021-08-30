@@ -16,8 +16,12 @@ mqd_t get_mq(char* queue_name, int flag);
 
 void send_msg_to_queue(mqd_t qd, char* msg, int msg_len);
 
-char* read_file(const char* file_name);
+void receive_msg_from_queue(mqd_t qd, char* msg, long msg_len);
+
+char* read_file(const char* file_name, int* file_len);
 
 void write_file(const char* file_name, char *file_content, int file_len, char* mode);
+
+void add_error_or_not(char* msg, int error_counter);
 
 #endif

@@ -55,5 +55,13 @@ int main() {
     msg = remove_header(msg, 5);
     printf("%s\n", msg);
 
+    strcpy(msg, string);
+    msg = add_hash(msg, hash(msg));
+    printf("%s\n", msg);
+
+    char* h = remove_hash(msg, strlen(msg));
+    printf("%s\n", h);
+    printf("%s\n", msg);
+
     return 0;
 }
