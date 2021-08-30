@@ -12,8 +12,11 @@
 #include <sys/stat.h>
 #include <mqueue.h>
 
+#include <signal.h>
+
 #include "utils.h"
 #include "message_handler.h"
+
 
 #define SOCK_MAX_MSG 100
 #define MQ_MAX_LEN 50
@@ -29,6 +32,18 @@
 
 mqd_t m_queue_r;
 mqd_t m_queue_w;
+
+char* READ_MQ = "/R_SERVER_MESSAGE_QUEUE";
+char* WRITE_MQ = "/W_SERVER_MESSAGE_QUEUE";
+
+
+void handle_SIGINT(int sig) {
+    mq_close(m_queue_r);
+    mq_close(m_queue_w);
+    mq_unlink(READ_MQ);
+    mq_unlink(WRITE_MQ);
+    exit(0);
+}
 
 int create_socket_descriptor() {
     int sd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -68,7 +83,7 @@ void start_server_loop(int sd, size_t PDU_len, struct sockaddr_in* endCli) {
         // Retira hash(CRC)
         char* h = remove_hash(msg, n);
         int hint;
-        printf("hash: %s\n", h);
+       // printf("hash: %s\n", h);
         memcpy((void*)&hint, h, 4);
         // Verifica erros
         if (hint != hash(msg)) {
@@ -88,12 +103,10 @@ void start_server_loop(int sd, size_t PDU_len, struct sockaddr_in* endCli) {
 
         // Envia mensagem pra fila
         printf("%s", msg);
-//         send_msg_to_queue(m_queue_w, msg, PDU_len);
+        send_msg_to_queue(m_queue_w, msg, PDU_len);
     }
 }
 
-char* READ_MQ = "/R_SERVER_MESSAGE_QUEUE";
-char* WRITE_MQ = "/W_SERVER_MESSAGE_QUEUE";
 
 //Retorna o tamanho da PDU
 int process_command_line(int argc, char** argv) {
@@ -112,6 +125,9 @@ int process_command_line(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     
+    signal(SIGINT, &handle_SIGINT);
+
+
     int PDU_len = process_command_line(argc, argv);
 
     //inicializa fila de mensagens
