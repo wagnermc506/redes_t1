@@ -14,6 +14,16 @@
 gcc 
 ```
 
+### Script de compilação
+
+Para compilar todos os arquivos necessários, utilize o comando:
+
+```sh
+$ bash compile.sh
+```
+
+Este script criará os binários: server, client, server_app e client_app. Inicie os binários na ordem das etapas  descritas a seguir (se usado o script de compilação, pular os comandos com gcc).
+
 ### Primeira etapa
 
 Crie um arquivo como teste.c
