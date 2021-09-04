@@ -16,6 +16,7 @@
 
 #include "utils.h"
 #include "message_handler.h"
+#include "frame.h"
 
 #define SOCK_MAX_MSG 100
 #define MQ_MAX_LEN 20
@@ -25,9 +26,18 @@
 #define READ 1
 
 #define MAX_MSG 100
+#define DEFAULT 100
+#define MIN_MSG 12
 
 #define ACK 6
 #define NAK 21
+
+#define SENDMODE_FRAME {'S', '0', '0', 0, NULL, 0};
+#define NAK_SEND {'S', '0', NAK, 0, NULL, 0};
+#define ACK_SEND {'S', '0', ACK, 0, NULL, 0};
+
+#define DATA_FRAME {'P', '0', '0', 0, NULL, 0};
+#define DATA_FRAME_END {'E', '0', '0', 0, NULL, 0};
 
 mqd_t m_queue_r;
 mqd_t m_queue_w;
@@ -37,6 +47,11 @@ struct mq_attr attr_w;
 
 char* READ_MQ = "/R_CLIENT_MESSAGE_QUEUE";
 char* WRITE_MQ = "/W_CLIENT_MESSAGE_QUEUE";
+
+typedef enum {idle, sender, receiver} mode;
+
+int frame_len;
+int frame_data_len;
 
 void handle_SIGINT(int sig) {
     mq_close(m_queue_r);
@@ -81,9 +96,157 @@ int is_file_end(char* msg) {
     return 0;
 }
 
-char msg[1000000];
-char sock_msg[1000000];
+char msg[100000];
+char sock_msg[100000];
 char response[10000];
+
+mode current_mode = idle;
+
+void wait_confirmation_for_send_mode(int sd, struct sockaddr_in endServ) {
+    char *buffer = malloc((size_t)frame_len);
+    socklen_t tamServ;
+    while(1) {
+        int n = recvfrom(sd, buffer, frame_len, 0, (struct sockaddr*)&endServ, &tamServ);
+        if (n > -1) {
+            Frame frame = str_to_frame(buffer);
+            if (frame.kind == 'S' && frame.ack == ACK) {
+                current_mode = sender;
+                break;
+            }
+            else if (frame.kind == 'S' && frame.ack == '0') {
+                // neste caso o server enviou um pedido para entrar no modo de envio
+                // O client terá prioridade, então nega e reenvia o pedido
+                Frame frame = NAK_SEND;
+                uint buffer2_len;
+                char* buffer2 = frame_to_str(frame, &buffer2_len);
+                sendto(sd, buffer2, buffer2_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+                free(buffer2);
+            }
+        }
+    }
+    free(buffer);
+}
+
+void enter_sender_loop(int sd, struct sockaddr_in endServ) {
+    //Time to send some messages
+    while(1) {
+        uint prio;
+        ssize_t n = mq_receive(m_queue_r, msg, attr_r.mq_msgsize, &prio);
+        if (n > -1) {
+            if (prio == 0) {
+                // terminou de enviar os arquivos, então envia flag de termino para o server
+                // e saí do modo sender
+                Frame end_frame = DATA_FRAME_END;
+                uint end_frame_len;
+                char *end_frame_buffer = frame_to_str(end_frame, &end_frame_len);
+                sendto(sd, end_frame_buffer, end_frame_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+                free(end_frame_buffer);
+                current_mode = idle;
+                break;
+            }
+            //envia quadros para o socket
+            Frame frame = DATA_FRAME;
+            char* iter = msg;
+            char* end = iter+n;
+//             int er = 0;
+            for (; iter < end;) {
+//                 memset(sock_msg, 0x0, true_PDU_len);
+
+                frame.data = iter;
+                frame.len  = (iter+frame_data_len-iter);
+                if (iter + n > end) frame.len = end-iter;
+
+                uint buffer_len;
+                char* buffer = frame_to_str(frame, &buffer_len);
+
+                sendto(sd, buffer, buffer_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+                while(1) {
+                    //espera reconhecimento
+                    int e = recvfrom(sd, response, frame_len, 0, (struct sockaddr*)&endServ, NULL);
+                    if (e > -1) {
+                        Frame frame_ack = str_to_frame(response);
+                        if (frame_ack.kind == 'P' && frame_ack.ack == ACK) {
+                            break;
+                        }
+                    }
+                }
+                free(buffer);
+            }
+        }
+    }
+}
+
+void enter_receiver_loop(int sd, struct sockaddr_in endServ) {
+    //time to receive some messages
+    while(1) {
+        // começa a receber as mensagens do socket
+        char* buffer = malloc((size_t)frame_len);
+        ssize_t n = recvfrom(sd, buffer, frame_len, 0, (struct sockaddr*)&endServ, NULL);
+        if (n > -1) {
+            Frame frame = str_to_frame(buffer);
+            if (frame.kind == 'E') {
+                // sai do modo de recepção
+                mq_send(m_queue_w, " ", 1, 0);
+                current_mode = idle;
+                break;
+            }
+            Frame ack_frame = ACK_SEND;
+            uint buffer_len;
+            char *ack_buffer = frame_to_str(ack_frame, &buffer_len);
+            sendto(sd, ack_buffer, buffer_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+            free(ack_buffer);
+            mq_send(m_queue_w, frame.data, frame.len, 1);
+        }
+        free(buffer);
+    }
+}
+
+void idle_loop(int sd, struct sockaddr_in endServ) {
+    while(1) {
+        // tem mensagem na fila?
+        uint prio;
+        ssize_t n = mq_receive(m_queue_r, msg, attr_r.mq_msgsize, &prio);
+        if (n > -1) {
+            //A mensagem é de início de envio?
+            if (prio == 3) {
+                // Envia uma mensagem pro socket e espera o retorno.
+                // O buffer da mensagem de envio não importa, apenas a prioridade.
+                Frame frame = SENDMODE_FRAME;
+                uint buffer_len;
+                char* buffer = frame_to_str(frame, &buffer_len);
+                sendto(sd, buffer, buffer_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+                free(buffer);
+                wait_confirmation_for_send_mode(sd, endServ);
+                enter_sender_loop(sd, endServ);
+            }
+        }
+        // O server enviou alguma mensagem?
+        ssize_t s = recvfrom(sd, sock_msg, frame_len, 0, (struct sockaddr*)&endServ, NULL);
+        if (s > -1) {
+            // verifica se ele quer começar a enviar
+            Frame frame = str_to_frame(sock_msg);
+            if (frame.kind == 'S' && frame.ack == '0') {
+                current_mode = receiver;
+                Frame ack_frame = ACK_SEND;
+                uint buffer_len;
+                char* buffer = frame_to_str(ack_frame, &buffer_len);
+                sendto(sd, buffer, buffer_len, 0, (struct sockaddr*)&endServ, sizeof(endServ));
+                free(buffer);
+                enter_receiver_loop(sd, endServ);
+            }
+        }
+    }
+}
+
+void start_half_duplex_client_loop(int sd, struct sockaddr_in endServ) {
+    socklen_t tam_serv = sizeof(endServ);
+
+    while(1) {
+
+
+
+    }
+}
 
 void start_client_loop(int sd, size_t MQ_LEN, size_t PDU_len, struct sockaddr_in endServ) {
     socklen_t tam_serv = sizeof(endServ);
@@ -136,30 +299,35 @@ void start_client_loop(int sd, size_t MQ_LEN, size_t PDU_len, struct sockaddr_in
 }
 
 //Retorna o tamanho da PDU
-int process_command_line(int argc, char** argv) {
+void process_command_line(int argc, char** argv) {
     if (argc < 2) {
         printf("%s <tamanho_PDU>", argv[0]);
         printf("Tamanho da PDU não declarado\n");
-        printf("Usando tamanho de PDU padrao: %d\n", SOCK_MAX_MSG);
-        return SOCK_MAX_MSG;
+        printf("Usando tamanho de PDU padrao: %d\n", DEFAULT);
+        frame_len = DEFAULT;
+        frame_data_len = frame_len - HEADER_LEN - TRAILER_LEN;
     }
     if (atoi(argv[1]) <= 0) {
         printf("Tamanho de DPU inválido\nFavor, declarar um número maior que 0\n");
         exit(1);
     }
-    return atoi(argv[1]);
+    frame_len = atoi(argv[1]);
+    frame_data_len = frame_len - HEADER_LEN - TRAILER_LEN;
+    if (frame_data_len < MIN_MSG) {
+        printf("Tamanho da DPU deve ser no mínimo %d\n", MIN_MSG);
+        exit(1);
+    }
 }
 
 int main(int argc, char** argv) {
 
     signal(SIGINT, &handle_SIGINT);
 
-    //Tamanho da PDU
-    int PDU_len = process_command_line(argc, argv);
+    process_command_line(argc, argv);
 
     //Pega referência das filas
-    m_queue_r = init_mq(READ_MQ, 0, MQ_MAX_LEN, MQ_MAX_MSG);
-    m_queue_w = init_mq(WRITE_MQ, 0, MQ_MAX_LEN, MQ_MAX_MSG);
+    m_queue_r = init_mq(READ_MQ, O_RDWR | O_CREAT | O_NONBLOCK, MQ_MAX_LEN, MQ_MAX_MSG);
+    m_queue_w = init_mq(WRITE_MQ, O_RDWR | O_CREAT | O_NONBLOCK, MQ_MAX_LEN, MQ_MAX_MSG);
 
     int sd, rc, i;
 
@@ -172,13 +340,18 @@ int main(int argc, char** argv) {
     //configura informacoes do cliente
     configure_addr("0", htons(0), &endCli);
     sd = create_socket_descriptor();
+
+    int flags = fcntl(sd, F_GETFL);
+    fcntl(sd, F_SETFL, flags | O_NONBLOCK);
+
     rc = bind_socket(sd, &endCli);
 
 	mq_getattr(m_queue_r, &attr_r);
     mq_getattr(m_queue_w, &attr_w);
 
     //Código de envio a partir daqui
-    start_client_loop(sd, attr_w.mq_maxmsg, PDU_len, endServ);
+//     start_client_loop(sd, attr_w.mq_maxmsg, frame_data_len, endServ);
+    idle_loop(sd, endServ);
 
     return 0;
 }

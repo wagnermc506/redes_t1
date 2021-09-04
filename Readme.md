@@ -87,7 +87,7 @@ Resultado:
 ![terceiro print](./img/terceiro_print.png)
 
 **Observe o terminal da terceira etapa:**
-<br>
+
 ![quarto print](./img/quarto_print.png)
 
 

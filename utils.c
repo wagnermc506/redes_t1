@@ -31,7 +31,7 @@ mqd_t init_mq(char* queue_name, int flag, int mq_len, int mq_max_msg) {
 //     fila_attr.mq_maxmsg = mq_len;
 //     fila_attr.mq_msgsize = mq_max_msg;
     
-    mqd_t qd = mq_open(queue_name, O_RDWR | O_CREAT, S_IRWXU, NULL);
+    mqd_t qd = mq_open(queue_name, flag, S_IRWXU, NULL);
 	if (qd < 0) {
 		printf("Erro na criacao da fila %s\n", queue_name);
 		exit(0);
@@ -47,6 +47,12 @@ mqd_t get_mq(char *queue_name, int flag) {
 	}
 	
 	return qd;
+}
+
+struct mq_attr get_mqueue_attr(mqd_t mq) {
+    struct mq_attr attr;
+    mq_getattr(mq, &attr);
+    return attr;
 }
 
 void send_msg_to_queue(mqd_t qd, char* msg, int msg_len) {

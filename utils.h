@@ -14,6 +14,8 @@ mqd_t init_mq(char* queue_name, int flag, int mq_len, int mq_max_msg);
 
 mqd_t get_mq(char* queue_name, int flag);
 
+struct mq_attr get_mqueue_attr(mqd_t mq);
+
 void send_msg_to_queue(mqd_t qd, char* msg, int msg_len);
 
 void receive_msg_from_queue(mqd_t qd, char* msg, long msg_len);
